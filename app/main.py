@@ -1,41 +1,67 @@
-from __future__ import annotations
-
+import threading
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from ddddocr import DdddOcr
+from fastapi import FastAPI, File, UploadFile
 
-from .config import Settings
-from .routes import router
-from .service import DdddOcrService
+from .config import get_ddddocr_options
 
-
-def create_app(
-        settings: Settings | None = None,
-        service: DdddOcrService | None = None,
-) -> FastAPI:
-    service_settings = settings or Settings.from_env()
-    ocr_service = service or DdddOcrService(service_settings)
-
-    @asynccontextmanager
-    async def lifespan(_: FastAPI):
-        ocr_service.initialize()
-        try:
-            yield
-        finally:
-            ocr_service.close()
-
-    application = FastAPI(
-        title="DdddOcr API",
-        description="HTTP API service for DdddOcr",
-        version="1.0.0",
-        docs_url="/docs",
-        redoc_url="/redoc",
-        lifespan=lifespan,
-    )
-    application.state.settings = service_settings
-    application.state.ocr_service = ocr_service
-    application.include_router(router)
-    return application
+inference_lock = threading.Lock()
 
 
-app = create_app()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.ocr = DdddOcr(**get_ddddocr_options())
+    yield
+
+
+app = FastAPI(
+    title="DdddOcr API",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+@app.post("/ocr")
+def ocr(file: UploadFile = File(...)):
+    with inference_lock:
+        result = app.state.ocr.classification(file.file.read())
+    return {"result": result}
+
+
+@app.post("/det")
+def det(file: UploadFile = File(...)):
+    with inference_lock:
+        result = app.state.ocr.detection(file.file.read())
+    return {"result": result}
+
+
+@app.post("/slide_match")
+def slide_match(
+        target_image: UploadFile = File(...),
+        background_image: UploadFile = File(...),
+):
+    with inference_lock:
+        result = app.state.ocr.slide_match(
+            target_image.file.read(),
+            background_image.file.read(),
+        )
+    return {"result": result}
+
+
+@app.post("/slide_comparison")
+def slide_comparison(
+        target_image: UploadFile = File(...),
+        background_image: UploadFile = File(...),
+):
+    with inference_lock:
+        result = app.state.ocr.slide_comparison(
+            target_image.file.read(),
+            background_image.file.read(),
+        )
+    return {"result": result}
